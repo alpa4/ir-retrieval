@@ -1,0 +1,41 @@
+index:
+  docs_path: /app/data/documents
+  state_path: /app/state/index_state.json
+
+splitting:
+  class: recursive
+  chunk_size: 800
+  chunk_overlap: 100
+
+embeddings:
+  model_name: BAAI/bge-small-en-v1.5
+  device: null
+  batch_size: 32
+
+cross_encoder:
+  enabled_by_default: true
+  model_name: cross-encoder/ms-marco-MiniLM-L-6-v2
+  device: null
+  batch_size: 16
+
+sparse:
+  enabled: true
+
+doc_summary:
+  enabled: true
+  model: gpt-4o-mini
+  temperature: 0
+  max_tokens: 300
+  prompt_version: v1
+
+qdrant:
+  host: qdrant
+  port: 6333
+
+search_defaults:
+  top_k_doc: 5
+  top_k_dense: 10
+  top_k_sparse: 10
+  final_top_k: 10
+  use_cross_encoder: true
+  mode: default
