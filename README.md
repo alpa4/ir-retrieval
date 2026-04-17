@@ -72,7 +72,7 @@ cp .env.example .env
 ```env
 OPENAI_API_KEY=your_key_here
 OPENAI_BASE_URL=https://api.openai.com/v1
-CONFIG_PATH=config/config.yaml
+CONFIG_PATH=/app/config/config.yaml
 ```
 
 ### 3. Положить документы
