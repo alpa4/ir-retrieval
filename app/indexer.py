@@ -2,6 +2,7 @@ import logging
 from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
 
+from app.summarizer import DocumentSummarizer
 from app.models import AppConfig
 from app.files import DocumentFile, scan_documents
 from app.splitter import split_text
@@ -17,12 +18,13 @@ def index_document(
     config: AppConfig,
     client: QdrantClient,
     embed_model: SentenceTransformer,
+    summarizer: DocumentSummarizer,
     doc_collection: str,
     chunk_collection: str,
     index_hash: str,
 ) -> None:
     # 1. Doc-level representation: first 4000 chars (summary disabled for now)
-    doc_text = doc.content[:4000]
+    doc_text = summarizer.summarize(doc.content)
     doc_vector = embed_single(embed_model, doc_text)
 
     # 2. Upsert document into doc_level collection
@@ -88,6 +90,7 @@ def sync_documents(
     config: AppConfig,
     client: QdrantClient,
     embed_model: SentenceTransformer,
+    summarizer: DocumentSummarizer,
     doc_collection: str,
     chunk_collection: str,
     index_hash: str,
@@ -102,13 +105,13 @@ def sync_documents(
 
         if existing is None:
             logger.info(f"Indexing: {doc.relative_path}")
-            index_document(doc, config, client, embed_model,
+            index_document(doc, config, client, embed_model, summarizer,
                            doc_collection, chunk_collection, index_hash)
             indexed += 1
         elif existing.payload.get("content_hash") != doc.content_hash:
             logger.info(f"Reindexing (changed): {doc.relative_path}")
             delete_document(doc.doc_id_int, client, doc_collection, chunk_collection)
-            index_document(doc, config, client, embed_model,
+            index_document(doc, config, client, embed_model, summarizer,
                            doc_collection, chunk_collection, index_hash)
             indexed += 1
 
