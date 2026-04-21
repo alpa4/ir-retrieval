@@ -13,6 +13,7 @@ from qdrant_client.models import (
     Prefetch,
     FusionQuery,
     Fusion,
+    NearestQuery,
 )
 from app.models import QdrantConfig
 
@@ -133,11 +134,12 @@ def search_chunks_hybrid(
     doc_filter = Filter(
         must=[FieldCondition(key="doc_id", match=MatchAny(any=doc_ids))]
     )
+    qdrant_sparse = SparseVector(indices=sparse_vector.indices, values=sparse_vector.values)
     result = client.query_points(
         collection_name=collection,
         prefetch=[
-            Prefetch(query=dense_vector, using="dense", limit=top_k_dense, filter=doc_filter),
-            Prefetch(query=sparse_vector, using="sparse", limit=top_k_sparse, filter=doc_filter),
+            Prefetch(query=NearestQuery(nearest=dense_vector), using="dense", limit=top_k_dense, filter=doc_filter),
+            Prefetch(query=NearestQuery(nearest=qdrant_sparse), using="sparse", limit=top_k_sparse, filter=doc_filter),
         ],
         query=FusionQuery(fusion=Fusion.RRF),
         limit=top_k_dense + top_k_sparse,
