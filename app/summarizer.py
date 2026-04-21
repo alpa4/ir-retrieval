@@ -55,7 +55,10 @@ class DocumentSummarizer:
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=[{"role": "user", "content": self.prompt}],
+                messages=[
+                    {"role": "system", "content": self.prompt},
+                    {"role": "user", "content": full_text[: self.fallback_chars]},
+                ],
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
