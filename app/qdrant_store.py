@@ -40,14 +40,14 @@ def create_chunk_collection(client: QdrantClient, name: str) -> None:
         return
     client.create_collection(
         collection_name=name,
-        vectors_config=VectorParams(size=DENSE_DIM, distance=Distance.COSINE),
+        vectors_config={"dense": VectorParams(size=DENSE_DIM, distance=Distance.COSINE)},
         sparse_vectors_config={
             "sparse": SparseVectorParams(index=SparseIndexParams())
         },
     )
 
 
-def upsert_document(client: QdrantClient, collection: str, doc_id: str,
+def upsert_document(client: QdrantClient, collection: str, doc_id: int,
                     vector: list[float], payload: dict) -> None:
     client.upsert(
         collection_name=collection,
@@ -65,7 +65,7 @@ def upsert_chunks(client: QdrantClient, collection: str,
         structs.append(PointStruct(
             id=p["id"],
             vector={
-                "": p["dense_vector"],
+                "dense": p["dense_vector"],
                 "sparse": SparseVector(
                     indices=p["sparse_indices"],
                     values=p["sparse_values"],
@@ -76,7 +76,7 @@ def upsert_chunks(client: QdrantClient, collection: str,
     client.upsert(collection_name=collection, points=structs)
 
 
-def delete_document(client: QdrantClient, collection: str, doc_id: str) -> None:
+def delete_document(client: QdrantClient, collection: str, doc_id: int) -> None:
     client.delete(
         collection_name=collection,
         points_selector=[doc_id],
