@@ -1,44 +1,68 @@
 # IR Retrieval Service
 
-Локальный двухуровневый retrieval pipeline для поиска по текстовым документам.
-
-## Что это
-
-Сервис индексирует `.txt` и `.md` файлы и позволяет искать по ним с использованием:
-- **Doc-level retrieval** — сначала находим релевантные документы
-- **Chunk-level retrieval** — затем ищем чанки внутри этих документов (dense + sparse)
-- **Optional cross-encoder reranking** — финальная пересортировка результатов
+Локальный двухуровневый retrieval pipeline для поиска по текстовым документам с гибридным поиском (dense + sparse) и опциональным cross-encoder reranking.
 
 ## Стек
 
 | Компонент | Технология |
 |---|---|
 | API | FastAPI + uvicorn |
-| Векторная БД | Qdrant |
+| Векторная БД | Qdrant 1.11 |
 | Embeddings | sentence-transformers (`BAAI/bge-small-en-v1.5`) |
 | Sparse | TF-weighted bag of words |
+| Hybrid fusion | Qdrant RRF (Reciprocal Rank Fusion) |
+| Cross-encoder | `cross-encoder/ms-marco-MiniLM-L-6-v2` (опционально) |
+| Summarization | OpenAI-compatible API (OpenAI / LM Studio / Ollama) |
 | Конфиг | pydantic-settings + PyYAML |
 | Запуск | Docker Compose (cpu / gpu профили) |
+
+## Как работает
+
+```
+Запрос
+  │
+  ▼
+Doc-level dense retrieval (top_k_doc документов)
+  │
+  ▼
+Chunk-level hybrid retrieval (dense + sparse → RRF fusion)
+  │  фильтрация по найденным doc_id
+  ▼
+[Optional] Cross-encoder reranking
+  │
+  ▼
+Результаты с полными score-ами
+```
+
+При индексации каждый документ:
+1. Суммаризуется через LLM (или первые 4000 символов как fallback)
+2. Его summary эмбеддится → одна точка в `doc_level` коллекции
+3. Текст режется на чанки → dense + sparse векторы → `chunk_level` коллекция
 
 ## Структура проекта
 
 ```
 ir-retrieval/
 ├── app/
-│   ├── main.py           # точка входа, startup логика
+│   ├── main.py           # точка входа, lifespan startup
 │   ├── api.py            # FastAPI endpoints
+│   ├── search.py         # поисковый pipeline
+│   ├── indexer.py        # индексация документов
+│   ├── reranker.py       # cross-encoder reranking
+│   ├── summarizer.py     # LLM summarization с fallback
+│   ├── qdrant_store.py   # операции с Qdrant
+│   ├── embeddings.py     # dense embeddings
+│   ├── sparse.py         # sparse векторы (TF-weighted)
+│   ├── splitter.py       # разбиение текста на чанки
+│   ├── files.py          # обход файлов, doc_id, content_hash
+│   ├── hashing.py        # вычисление index_hash
+│   ├── models.py         # AppConfig pydantic модели
 │   ├── settings.py       # EnvSettings (читает .env)
 │   ├── config_loader.py  # загрузка config.yaml
-│   ├── models.py         # AppConfig pydantic модели
-│   ├── hashing.py        # вычисление index_hash
-│   ├── files.py          # обход файлов, doc_id, content_hash
-│   ├── splitter.py       # разбиение текста на чанки
-│   ├── embeddings.py     # текст → dense вектор
-│   ├── sparse.py         # текст → sparse вектор
-│   ├── qdrant_store.py   # операции с Qdrant
-│   ├── indexer.py        # индексация документов
-│   ├── search.py         # поисковый pipeline
-│   └── evaluator.py      # evaluation метрики
+│   ├── state.py          # index_state.json управление
+│   └── evaluator.py      # CLI evaluation: Recall, Precision, MRR, nDCG
+├── scripts/
+│   └── prepare_dataset.py  # скачать BEIR датасет и конвертировать
 ├── config/
 │   └── config.yaml       # параметры системы
 ├── data/documents/       # сюда кладём .txt / .md файлы
@@ -46,7 +70,7 @@ ir-retrieval/
 ├── eval/
 │   ├── queries.jsonl     # запросы для evaluation
 │   └── qrels.jsonl       # релевантные документы для evaluation
-├── .env.example          # шаблон для .env
+├── .env.example
 ├── docker-compose.yml
 ├── Dockerfile
 └── requirements.txt
@@ -54,97 +78,161 @@ ir-retrieval/
 
 ## Быстрый старт
 
-### 1. Клонировать репозиторий
-
-```bash
-git clone <repo-url>
-cd ir-retrieval
-```
-
-### 2. Создать `.env`
+### 1. Создать `.env`
 
 ```bash
 cp .env.example .env
 ```
 
-Заполнить `.env` своими значениями:
-
+Для OpenAI:
 ```env
-OPENAI_API_KEY=your_key_here
+OPENAI_API_KEY=sk-...
 OPENAI_BASE_URL=https://api.openai.com/v1
-CONFIG_PATH=/app/config/config.yaml
 ```
 
-### 3. Положить документы
+Для LM Studio (локальная LLM):
+```env
+OPENAI_API_KEY=lm-studio
+OPENAI_BASE_URL=http://host.docker.internal:1234/v1
+```
 
-Скопировать `.txt` или `.md` файлы в папку `data/documents/`.
+> LM Studio: запустить локальный сервер на `0.0.0.0:1234`, загрузить модель.
+> Имя модели указать в `config/config.yaml` → `doc_summary.model`.
 
-### 4. Запустить
+Если LLM не нужна — выставить `doc_summary.enabled: false` в `config.yaml`.
 
-**CPU:**
+### 2. Положить документы
+
+```bash
+cp my_docs/*.txt data/documents/
+```
+
+Поддерживаются `.txt` и `.md` файлы.
+
+### 3. Запустить
+
 ```bash
 docker compose --profile cpu up --build
 ```
 
-**GPU (NVIDIA):**
+Для NVIDIA GPU:
 ```bash
 docker compose --profile gpu up --build
 ```
 
-### 5. Проверить
-
-- API: `http://localhost:8000/health`
-- Qdrant UI: `http://localhost:6333/dashboard`
-
-## Как работает индексация
-
-При каждом запуске система:
-
-1. Вычисляет `index_hash` из параметров конфига (chunk_size, модель и др.)
-2. Читает `state/index_state.json`
-3. Выбирает сценарий:
-   - **A** — state не найден → индексировать всё
-   - **B** — hash совпадает → доиндексировать только новые/изменённые файлы
-   - **C** — hash изменился → создать новые коллекции и переиндексировать всё
-4. Создаёт две коллекции в Qdrant: `doc_level_{hash}` и `chunk_level_{hash}`
-5. Для каждого документа: считает embedding, режет на чанки, заливает в Qdrant
+Сервис поднимется на `http://localhost:8000`.
 
 ## Конфигурация
 
-Все параметры в `config/config.yaml`. Секреты в `.env`.
+Все параметры в `config/config.yaml`, секреты в `.env`.
+
+Ключевые параметры:
+
+```yaml
+splitting:
+  chunk_size: 800       # размер чанка в символах
+  chunk_overlap: 100    # перекрытие
+
+embeddings:
+  model_name: BAAI/bge-small-en-v1.5
+
+cross_encoder:
+  enabled_by_default: false   # включить для лучшего качества (медленнее)
+  model_name: cross-encoder/ms-marco-MiniLM-L-6-v2
+
+doc_summary:
+  enabled: false        # true = вызов LLM для summary каждого документа
+
+search_defaults:
+  top_k_doc: 5          # сколько документов отбирается на doc-level
+  top_k_dense: 10       # dense кандидаты на chunk-level
+  top_k_sparse: 10      # sparse кандидаты на chunk-level
+  final_top_k: 10       # итоговое число результатов
+```
 
 Параметры влияющие на `index_hash` (изменение = полная переиндексация):
-- `splitting.chunk_size`, `chunk_overlap`
-- `embeddings.model_name`
-- `doc_summary.*`
-- `sparse.enabled`
+`chunk_size`, `chunk_overlap`, `embeddings.model_name`, `doc_summary.*`, `sparse.enabled`
 
 ## API
 
-| Метод | Endpoint | Описание |
+### `GET /health`
+```json
+{"status": "ok"}
+```
+
+### `GET /index-info`
+```json
+{"docs_on_disk": 5183, "docs_in_index": 5183, "status": "ok"}
+```
+
+### `POST /search`
+```bash
+curl -X POST http://localhost:8000/search \
+  -H 'Content-Type: application/json' \
+  -d '{"query": "your query here", "final_top_k": 5}'
+```
+
+Параметры (все опциональны, defaults из config):
+- `top_k_doc`, `top_k_dense`, `top_k_sparse`, `final_top_k`
+- `use_cross_encoder: true/false`
+
+### `POST /add-file`
+```bash
+curl -X POST http://localhost:8000/add-file \
+  -H 'Content-Type: application/json' \
+  -d '{"path": "/app/data/documents/new_doc.txt"}'
+```
+Возвращает `status`: `indexed` / `reindexed` / `already_indexed`
+
+### `POST /delete-file`
+```bash
+curl -X POST http://localhost:8000/delete-file \
+  -H 'Content-Type: application/json' \
+  -d '{"path": "/app/data/documents/old_doc.txt"}'
+```
+
+## Evaluation
+
+### Подготовка датасета BEIR
+
+```bash
+# Скачать и конвертировать SciFact (5183 документа, 300 запросов)
+python3 scripts/prepare_dataset.py --dataset scifact
+
+# Доступные датасеты: scifact, nfcorpus, fiqa, arguana
+python3 scripts/prepare_dataset.py --dataset nfcorpus
+```
+
+Скрипт скачивает датасет, сохраняет документы в `data/documents/`,
+обновляет `eval/queries.jsonl` и `eval/qrels.jsonl`.
+
+### Запуск evaluation
+
+```bash
+# После индексации
+python3 -m app.evaluator \
+  --queries eval/queries.jsonl \
+  --qrels eval/qrels.jsonl \
+  --api http://localhost:8000
+```
+
+### Результаты на SciFact (BEIR)
+
+Конфигурация: `BAAI/bge-small-en-v1.5`, hybrid RRF, без cross-encoder, без LLM summary.
+
+| Метрика | Значение |
+|---|---|
+| Recall@5 | 0.765 |
+| Recall@10 | 0.765 |
+| Precision@5 | 0.170 |
+| MRR | 0.650 |
+| nDCG@5 | 0.672 |
+| nDCG@10 | 0.672 |
+
+## Сценарии при старте
+
+| Сценарий | Условие | Действие |
 |---|---|---|
-| GET | `/health` | статус сервиса |
-| GET | `/index-info` | информация об индексе |
-| POST | `/search` | поиск по запросу |
-| POST | `/add-file` | добавить файл в индекс |
-| POST | `/delete-file` | удалить файл из индекса |
-
-## Что сделано (часть 1 — инфраструктура)
-
-- [x] Docker Compose с профилями cpu и gpu
-- [x] Конфигурация через `config.yaml` + `.env` + pydantic
-- [x] Вычисление `index_hash` из параметров конфига
-- [x] Рекурсивный обход файлов, `doc_id`, `content_hash`
-- [x] Recursive chunk splitter с overlap
-- [x] State management — сценарии A/B/C при старте
-- [x] Создание коллекций Qdrant (`doc_level` + `chunk_level`)
-- [x] Dense embeddings через sentence-transformers
-- [x] Sparse vectors (TF-weighted)
-- [x] Полная индексация документов в Qdrant
-
-## Что предстоит сделать
-
-- [ ] `summarizer.py` — summary документов через OpenAI (часть 2)
-- [ ] `search.py` — поисковый pipeline: doc-level → chunk-level → cross-encoder (часть 3)
-- [ ] `api.py` — все endpoints (часть 4)
-- [ ] `evaluator.py` — Recall@K, Precision@K, MRR, nDCG@K (часть 4)
+| A | нет state файла | индексировать все документы |
+| B | hash совпадает | доиндексировать только новые/изменённые |
+| C | hash изменился | создать новые коллекции, переиндексировать всё |
