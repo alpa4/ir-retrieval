@@ -78,11 +78,12 @@ def index_document(
 
 def delete_document(
     doc_id: str,
+    doc_id_int: int,
     client: QdrantClient,
     doc_collection: str,
     chunk_collection: str,
 ) -> None:
-    store.delete_document(client, doc_collection, doc_id)
+    store.delete_document(client, doc_collection, doc_id_int)
     store.delete_chunks_by_doc(client, chunk_collection, doc_id)
 
 
@@ -110,7 +111,7 @@ def sync_documents(
             indexed += 1
         elif existing.payload.get("content_hash") != doc.content_hash:
             logger.info(f"Reindexing (changed): {doc.relative_path}")
-            delete_document(doc.doc_id_int, client, doc_collection, chunk_collection)
+            delete_document(doc.doc_id, doc.doc_id_int, client, doc_collection, chunk_collection)
             index_document(doc, config, client, embed_model, summarizer,
                            doc_collection, chunk_collection, index_hash)
             indexed += 1
