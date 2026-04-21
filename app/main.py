@@ -7,6 +7,7 @@ from app.state import load_state, save_state, IndexState
 from app.qdrant_store import get_client, create_doc_collection, create_chunk_collection
 from app.embeddings import load_embedding_model
 from app.summarizer import DocumentSummarizer
+from app.reranker import load_cross_encoder
 from app.indexer import sync_documents
 
 logger = logging.getLogger("uvicorn.error")
@@ -36,7 +37,7 @@ async def lifespan(app: FastAPI):
     logger.info("Loading embedding model...")
     embed_model = load_embedding_model(config.embeddings)
     logger.info("Embedding model ready")
-    
+
     logger.info("Initializing document summarizer...")
     summarizer = DocumentSummarizer(
         enabled=config.doc_summary.enabled,
@@ -49,8 +50,12 @@ async def lifespan(app: FastAPI):
     )
     logger.info("Summarizer ready")
 
+    logger.info("Loading cross-encoder...")
+    cross_encoder = load_cross_encoder(config.cross_encoder)
+    logger.info("Cross-encoder ready" if cross_encoder else "Cross-encoder disabled")
+
     sync_documents(config, client, embed_model, summarizer,
-        doc_collection, chunk_collection, index_hash)
+                   doc_collection, chunk_collection, index_hash)
 
     state = IndexState(
         index_hash=index_hash,
@@ -59,10 +64,22 @@ async def lifespan(app: FastAPI):
     )
     save_state(config.index.state_path, state)
 
+    app.state.config = config
+    app.state.client = client
+    app.state.embed_model = embed_model
+    app.state.summarizer = summarizer
+    app.state.cross_encoder = cross_encoder
+    app.state.doc_collection = doc_collection
+    app.state.chunk_collection = chunk_collection
+    app.state.index_hash = index_hash
+
     yield
 
 
 app = FastAPI(title="IR Retrieval Service", lifespan=lifespan)
+
+from app.api import router  # noqa: E402 — imported after app is defined
+app.include_router(router)
 
 
 @app.get("/health")
