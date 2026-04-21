@@ -9,6 +9,10 @@ from qdrant_client.models import (
     Filter,
     FieldCondition,
     MatchValue,
+    MatchAny,
+    Prefetch,
+    FusionQuery,
+    Fusion,
 )
 from app.models import QdrantConfig
 
@@ -100,3 +104,43 @@ def get_document(client: QdrantClient, collection: str, doc_id: str):
 def count_documents(client: QdrantClient, collection: str) -> int:
     result = client.count(collection_name=collection)
     return result.count
+
+
+def search_docs(
+    client: QdrantClient,
+    collection: str,
+    query_vector: list[float],
+    top_k: int,
+) -> list:
+    result = client.query_points(
+        collection_name=collection,
+        query=query_vector,
+        limit=top_k,
+        with_payload=True,
+    )
+    return result.points
+
+
+def search_chunks_hybrid(
+    client: QdrantClient,
+    collection: str,
+    dense_vector: list[float],
+    sparse_vector: SparseVector,
+    doc_ids: list[str],
+    top_k_dense: int,
+    top_k_sparse: int,
+) -> list:
+    doc_filter = Filter(
+        must=[FieldCondition(key="doc_id", match=MatchAny(any=doc_ids))]
+    )
+    result = client.query_points(
+        collection_name=collection,
+        prefetch=[
+            Prefetch(query=dense_vector, using="dense", limit=top_k_dense, filter=doc_filter),
+            Prefetch(query=sparse_vector, using="sparse", limit=top_k_sparse, filter=doc_filter),
+        ],
+        query=FusionQuery(fusion=Fusion.RRF),
+        limit=top_k_dense + top_k_sparse,
+        with_payload=True,
+    )
+    return result.points
