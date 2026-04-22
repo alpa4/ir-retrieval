@@ -88,14 +88,16 @@ def search_endpoint(body: SearchRequest, request: Request):
         query=body.query,
         client=s.client,
         embed_model=s.embed_model,
+        sparse_model=s.sparse_model,
         doc_collection=s.doc_collection,
         chunk_collection=s.chunk_collection,
         top_k_doc=body.top_k_doc if body.top_k_doc is not None else cfg.top_k_doc,
         top_k_dense=body.top_k_dense if body.top_k_dense is not None else cfg.top_k_dense,
         top_k_sparse=body.top_k_sparse if body.top_k_sparse is not None else cfg.top_k_sparse,
         final_top_k=body.final_top_k if body.final_top_k is not None else cfg.final_top_k,
-        use_cross_encoder=body.use_cross_encoder if body.use_cross_encoder is not None else cfg.use_cross_encoder,
+        use_cross_encoder=body.use_cross_encoder if body.use_cross_encoder is not None else s.config.cross_encoder.enabled_by_default,
         cross_encoder=s.cross_encoder,
+        mode=body.mode if body.mode is not None else cfg.mode,
     )
 
     return SearchResponse(
@@ -130,7 +132,7 @@ def add_file(body: FilePathRequest, request: Request):
     existing = store.get_document(s.client, s.doc_collection, doc.doc_id_int)
 
     if existing is None:
-        index_document(doc, s.config, s.client, s.embed_model, s.summarizer,
+        index_document(doc, s.config, s.client, s.embed_model, s.sparse_model, s.summarizer,
                        s.doc_collection, s.chunk_collection, s.index_hash)
         return AddFileResponse(path=body.path, status="indexed")
 
@@ -138,7 +140,7 @@ def add_file(body: FilePathRequest, request: Request):
         return AddFileResponse(path=body.path, status="already_indexed")
 
     delete_document(doc.doc_id, doc.doc_id_int, s.client, s.doc_collection, s.chunk_collection)
-    index_document(doc, s.config, s.client, s.embed_model, s.summarizer,
+    index_document(doc, s.config, s.client, s.embed_model, s.sparse_model, s.summarizer,
                    s.doc_collection, s.chunk_collection, s.index_hash)
     return AddFileResponse(path=body.path, status="reindexed")
 

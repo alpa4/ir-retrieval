@@ -1,5 +1,6 @@
 import logging
 from sentence_transformers import SentenceTransformer
+from fastembed import SparseTextEmbedding
 from qdrant_client import QdrantClient
 
 from app.summarizer import DocumentSummarizer
@@ -18,12 +19,12 @@ def index_document(
     config: AppConfig,
     client: QdrantClient,
     embed_model: SentenceTransformer,
+    sparse_model: SparseTextEmbedding,
     summarizer: DocumentSummarizer,
     doc_collection: str,
     chunk_collection: str,
     index_hash: str,
 ) -> None:
-    # 1. Doc-level representation: first 4000 chars (summary disabled for now)
     doc_text = summarizer.summarize(doc.content)
     doc_vector = embed_single(embed_model, doc_text)
 
@@ -55,7 +56,7 @@ def index_document(
     # 5. Build sparse vectors and prepare points
     points = []
     for chunk, dense_vector in zip(chunks, dense_vectors):
-        sparse = build_sparse_vector(chunk.chunk_text)
+        sparse = build_sparse_vector(sparse_model, chunk.chunk_text)
         points.append({
             "id": chunk.chunk_id_int,
             "dense_vector": dense_vector,
@@ -91,6 +92,7 @@ def sync_documents(
     config: AppConfig,
     client: QdrantClient,
     embed_model: SentenceTransformer,
+    sparse_model: SparseTextEmbedding,
     summarizer: DocumentSummarizer,
     doc_collection: str,
     chunk_collection: str,
@@ -106,13 +108,13 @@ def sync_documents(
 
         if existing is None:
             logger.info(f"Indexing: {doc.relative_path}")
-            index_document(doc, config, client, embed_model, summarizer,
+            index_document(doc, config, client, embed_model, sparse_model, summarizer,
                            doc_collection, chunk_collection, index_hash)
             indexed += 1
         elif existing.payload.get("content_hash") != doc.content_hash:
             logger.info(f"Reindexing (changed): {doc.relative_path}")
             delete_document(doc.doc_id, doc.doc_id_int, client, doc_collection, chunk_collection)
-            index_document(doc, config, client, embed_model, summarizer,
+            index_document(doc, config, client, embed_model, sparse_model, summarizer,
                            doc_collection, chunk_collection, index_hash)
             indexed += 1
 

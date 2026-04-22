@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Optional
 
+from fastembed import SparseTextEmbedding
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 
@@ -23,6 +24,7 @@ def search(
     query: str,
     client: QdrantClient,
     embed_model: SentenceTransformer,
+    sparse_model: SparseTextEmbedding,
     doc_collection: str,
     chunk_collection: str,
     top_k_doc: int = 5,
@@ -31,10 +33,11 @@ def search(
     final_top_k: int = 10,
     use_cross_encoder: bool = False,
     cross_encoder=None,
+    mode: str = "default",
 ) -> list[SearchResult]:
     # 1. Encode query
     dense_q = embed_single(embed_model, query)
-    sparse_q = build_sparse_vector(query)
+    sparse_q = build_sparse_vector(sparse_model, query)
 
     # 2. Doc-level coarse retrieval
     doc_hits = store.search_docs(client, doc_collection, dense_q, top_k_doc)

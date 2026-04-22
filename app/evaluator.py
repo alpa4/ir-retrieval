@@ -8,15 +8,27 @@ import os
 import urllib.request
 import urllib.error
 
+# --- Evaluation configuration ---
+DEFAULT_QUERIES_PATH = "eval/queries.jsonl"
+DEFAULT_QRELS_PATH = "eval/qrels.jsonl"
+DEFAULT_API_BASE = os.getenv("API_BASE", "http://localhost:8000")
+DEFAULT_K_VALUES = [5, 10]
+DEFAULT_USE_CROSS_ENCODER = False
+# --------------------------------
+
 
 def load_jsonl(path: str) -> list[dict]:
     with open(path, encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
 
 
-def search_api(api_base: str, query: str, final_top_k: int) -> list[str]:
+def search_api(api_base: str, query: str, final_top_k: int, use_cross_encoder: bool) -> list[str]:
     """Return ordered list of doc_ids from /search (deduped, first-occurrence wins)."""
-    payload = json.dumps({"query": query, "final_top_k": final_top_k, "use_cross_encoder": False}).encode()
+    payload = json.dumps({
+        "query": query,
+        "final_top_k": final_top_k,
+        "use_cross_encoder": use_cross_encoder,
+    }).encode()
     req = urllib.request.Request(
         f"{api_base}/search",
         data=payload,
@@ -66,7 +78,13 @@ def ndcg_at_k(retrieved: list[str], relevant: set[str], k: int) -> float:
     return dcg / idcg if idcg > 0 else 0.0
 
 
-def evaluate(queries_path: str, qrels_path: str, api_base: str, ks: list[int]) -> None:
+def evaluate(
+    queries_path: str,
+    qrels_path: str,
+    api_base: str,
+    ks: list[int],
+    use_cross_encoder: bool,
+) -> None:
     queries = load_jsonl(queries_path)
     qrels_raw = load_jsonl(qrels_path)
 
@@ -89,7 +107,7 @@ def evaluate(queries_path: str, qrels_path: str, api_base: str, ks: list[int]) -
         relevant = qrels.get(qid, set())
 
         try:
-            retrieved = search_api(api_base, query_text, max_k)
+            retrieved = search_api(api_base, query_text, max_k, use_cross_encoder)
         except urllib.error.URLError as e:
             print(f"[WARN] Query {qid} failed: {e}")
             retrieved = []
@@ -101,25 +119,27 @@ def evaluate(queries_path: str, qrels_path: str, api_base: str, ks: list[int]) -
         metrics["MRR"].append(reciprocal_rank(retrieved, relevant))
 
     n = len(queries)
+    rerank_label = " (with cross-encoder)" if use_cross_encoder else ""
     print(f"\n{'Metric':<20} {'Value':>10}")
     print("-" * 32)
     for name, values in metrics.items():
         avg = sum(values) / len(values) if values else 0.0
         print(f"{name:<20} {avg:>10.4f}")
-    print(f"\nEvaluated {n} queries against {api_base}")
+    print(f"\nEvaluated {n} queries against {api_base}{rerank_label}")
 
 
 def main():
     parser = argparse.ArgumentParser(description="IR Retrieval Evaluator")
-    parser.add_argument("--queries", required=True, help="Path to queries.jsonl")
-    parser.add_argument("--qrels", required=True, help="Path to qrels.jsonl")
-    parser.add_argument("--api", default=os.getenv("API_BASE", "http://localhost:8000"),
-                        help="API base URL (default: http://localhost:8000)")
-    parser.add_argument("--k", nargs="+", type=int, default=[5, 10],
+    parser.add_argument("--queries", default=DEFAULT_QUERIES_PATH, help="Path to queries.jsonl")
+    parser.add_argument("--qrels", default=DEFAULT_QRELS_PATH, help="Path to qrels.jsonl")
+    parser.add_argument("--api", default=DEFAULT_API_BASE, help="API base URL")
+    parser.add_argument("--k", nargs="+", type=int, default=DEFAULT_K_VALUES,
                         help="K values for metrics (default: 5 10)")
+    parser.add_argument("--cross-encoder", action="store_true", default=DEFAULT_USE_CROSS_ENCODER,
+                        help="Enable cross-encoder reranking during evaluation")
     args = parser.parse_args()
 
-    evaluate(args.queries, args.qrels, args.api, sorted(set(args.k)))
+    evaluate(args.queries, args.qrels, args.api, sorted(set(args.k)), args.cross_encoder)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ from app.state import load_state, save_state, IndexState
 from app.qdrant_store import get_client, create_doc_collection, create_chunk_collection
 from app.embeddings import load_embedding_model
 from app.summarizer import DocumentSummarizer
+from app.sparse import load_sparse_model
 from app.reranker import load_cross_encoder
 from app.indexer import sync_documents
 
@@ -31,12 +32,17 @@ async def lifespan(app: FastAPI):
         logger.info("Scenario B: hash matches → checking for missing documents")
 
     client = get_client(config.qdrant)
-    create_doc_collection(client, doc_collection)
-    create_chunk_collection(client, chunk_collection)
+    vector_size = config.embeddings.vector_size
+    create_doc_collection(client, doc_collection, vector_size)
+    create_chunk_collection(client, chunk_collection, vector_size)
 
     logger.info("Loading embedding model...")
     embed_model = load_embedding_model(config.embeddings)
     logger.info("Embedding model ready")
+
+    logger.info("Loading sparse model...")
+    sparse_model = load_sparse_model(config.sparse.model_name)
+    logger.info("Sparse model ready")
 
     logger.info("Initializing document summarizer...")
     summarizer = DocumentSummarizer(
@@ -54,7 +60,7 @@ async def lifespan(app: FastAPI):
     cross_encoder = load_cross_encoder(config.cross_encoder)
     logger.info("Cross-encoder ready" if cross_encoder else "Cross-encoder disabled")
 
-    sync_documents(config, client, embed_model, summarizer,
+    sync_documents(config, client, embed_model, sparse_model, summarizer,
                    doc_collection, chunk_collection, index_hash)
 
     state = IndexState(
@@ -67,6 +73,7 @@ async def lifespan(app: FastAPI):
     app.state.config = config
     app.state.client = client
     app.state.embed_model = embed_model
+    app.state.sparse_model = sparse_model
     app.state.summarizer = summarizer
     app.state.cross_encoder = cross_encoder
     app.state.doc_collection = doc_collection

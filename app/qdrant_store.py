@@ -17,9 +17,6 @@ from qdrant_client.models import (
 )
 from app.models import QdrantConfig
 
-# Dimension of BAAI/bge-small-en-v1.5 embeddings
-DENSE_DIM = 384
-
 
 def get_client(config: QdrantConfig) -> QdrantClient:
     return QdrantClient(host=config.host, port=config.port)
@@ -29,23 +26,23 @@ def collection_exists(client: QdrantClient, name: str) -> bool:
     return client.collection_exists(name)
 
 
-def create_doc_collection(client: QdrantClient, name: str) -> None:
+def create_doc_collection(client: QdrantClient, name: str, vector_size: int) -> None:
     """One point per document. Only dense vector (summary embedding)."""
     if collection_exists(client, name):
         return
     client.create_collection(
         collection_name=name,
-        vectors_config=VectorParams(size=DENSE_DIM, distance=Distance.COSINE),
+        vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
     )
 
 
-def create_chunk_collection(client: QdrantClient, name: str) -> None:
+def create_chunk_collection(client: QdrantClient, name: str, vector_size: int) -> None:
     """One point per chunk. Dense + sparse vectors."""
     if collection_exists(client, name):
         return
     client.create_collection(
         collection_name=name,
-        vectors_config={"dense": VectorParams(size=DENSE_DIM, distance=Distance.COSINE)},
+        vectors_config={"dense": VectorParams(size=vector_size, distance=Distance.COSINE)},
         sparse_vectors_config={
             "sparse": SparseVectorParams(index=SparseIndexParams())
         },

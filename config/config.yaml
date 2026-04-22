@@ -9,6 +9,7 @@ splitting:
 
 embeddings:
   model_name: BAAI/bge-small-en-v1.5
+  vector_size: 384
   device: null
   batch_size: 32
 
@@ -20,6 +21,7 @@ cross_encoder:
 
 sparse:
   enabled: true
+  model_name: Qdrant/bm25
 
 doc_summary:
   enabled: true
@@ -37,5 +39,4 @@ search_defaults:
   top_k_dense: 40
   top_k_sparse: 40
   final_top_k: 20
-  use_cross_encoder: true
   mode: default

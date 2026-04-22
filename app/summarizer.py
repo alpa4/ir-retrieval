@@ -7,8 +7,8 @@ logger = logging.getLogger("uvicorn.error")
 
 PROMPTS = {
     "v1": (
-        "Generate a concise, factual summary of the document for retrieval."
-        "Identify the topic, key entities, processes, rules, and important facts."
+        "Generate a concise, factual summary of the document for retrieval. "
+        "Identify the topic, key entities, processes, rules, and important facts. "
         "Write concisely and without fluff."
     )
 }

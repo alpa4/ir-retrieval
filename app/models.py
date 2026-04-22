@@ -26,6 +26,7 @@ class EmbeddingsConfig(BaseModel):
     model_config = {"protected_namespaces": ()}
 
     model_name: str
+    vector_size: int = 384
     device: Optional[str] = None
     batch_size: int = 32
 
@@ -41,6 +42,7 @@ class CrossEncoderConfig(BaseModel):
 
 class SparseConfig(BaseModel):
     enabled: bool = True
+    model_name: str = "Qdrant/bm25"
 
 
 class DocSummaryConfig(BaseModel):
@@ -61,7 +63,6 @@ class SearchDefaultsConfig(BaseModel):
     top_k_dense: int = 10
     top_k_sparse: int = 10
     final_top_k: int = 10
-    use_cross_encoder: bool = True
     mode: str = "default"
 
 

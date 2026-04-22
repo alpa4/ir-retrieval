@@ -5,7 +5,7 @@ from app.models import CrossEncoderConfig
 
 
 def load_cross_encoder(config: CrossEncoderConfig) -> Optional[CrossEncoder]:
-    if not config.enabled_by_default:
+    if not config.model_name:
         return None
     device = get_device(config.device)
     return CrossEncoder(config.model_name, device=device)
