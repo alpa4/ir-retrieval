@@ -18,7 +18,11 @@ Two-level retrieval pipeline for searching text documents. Each document is summ
 
 At indexing time each document is summarized via LLM (or falls back to first 4000 chars), the summary is embedded into the `doc_level` collection, and the full text is chunked with dense + sparse vectors stored in `chunk_level`.
 
+![Indexing pipeline](indexing.png)
+
 At query time: doc-level dense retrieval picks the top candidate documents, then chunk-level hybrid retrieval (dense + sparse → RRF) runs filtered to those documents, and an optional cross-encoder reranks the final results.
+
+![Search pipeline](search.png)
 
 ## Setup
 
@@ -44,11 +48,7 @@ Drop `.txt` or `.md` files into `data/documents/`. Subdirectories are supported.
 ### 3. Run
 
 ```bash
-# CPU
-docker compose --profile cpu up --build
-
-# GPU (NVIDIA)
-docker compose --profile gpu up --build
+docker compose up --build
 ```
 
 API available at `http://localhost:8000`. On first start all documents in `data/documents/` are indexed automatically.
