@@ -1,7 +1,6 @@
-# app/summarizer.py
 import logging
 from typing import Optional
-from openai import OpenAI, APIConnectionError, APIStatusError, BadRequestError
+from openai import OpenAI, AsyncOpenAI, APIConnectionError, APIStatusError, BadRequestError
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -32,24 +31,23 @@ class DocumentSummarizer:
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.client = None
+        self.async_client = None
 
         if enabled and api_key:
             try:
                 self.client = OpenAI(api_key=api_key, base_url=base_url)
+                self.async_client = AsyncOpenAI(api_key=api_key, base_url=base_url)
                 logger.info("OpenAI client initialized for summarization")
             except Exception as e:
                 logger.warning(f"Failed to initialize OpenAI client: {e}. Summarization disabled.")
-                self.client = None
                 self.enabled = False
         else:
-            self.client = None
             if enabled:
                 logger.warning("Summarization enabled but no API key provided. Using fallback.")
 
     def summarize(self, full_text: str) -> str:
-        """Generate summary or return fallback (first N chars)."""
         if not self.enabled or self.client is None:
-            logger.debug("Using fallback summarization (first chars)")
             return full_text[: self.fallback_chars]
 
         try:
@@ -63,13 +61,30 @@ class DocumentSummarizer:
                 max_tokens=self.max_tokens,
             )
             summary = response.choices[0].message.content.strip()
-            if summary:
-                logger.debug(f"LLM summary generated ({len(summary)} chars)")
-                return summary
-            else:
-                logger.warning("LLM returned empty summary, using fallback")
-                return full_text[: self.fallback_chars]
+            return summary if summary else full_text[: self.fallback_chars]
+        except (APIConnectionError, APIStatusError, BadRequestError) as e:
+            logger.warning(f"OpenAI API error: {e}. Using fallback.")
+            return full_text[: self.fallback_chars]
+        except Exception as e:
+            logger.error(f"Unexpected error in summarization: {e}. Using fallback.")
+            return full_text[: self.fallback_chars]
 
+    async def summarize_async(self, full_text: str) -> str:
+        if not self.enabled or self.async_client is None:
+            return full_text[: self.fallback_chars]
+
+        try:
+            response = await self.async_client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": self.prompt},
+                    {"role": "user", "content": full_text[: self.fallback_chars]},
+                ],
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+            )
+            summary = response.choices[0].message.content.strip()
+            return summary if summary else full_text[: self.fallback_chars]
         except (APIConnectionError, APIStatusError, BadRequestError) as e:
             logger.warning(f"OpenAI API error: {e}. Using fallback.")
             return full_text[: self.fallback_chars]

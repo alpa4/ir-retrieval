@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException, UploadFile, File, Query
 from pydantic import BaseModel
 
 from app.search import search
@@ -44,14 +44,26 @@ class FilePathRequest(BaseModel):
     path: str
 
 
-class AddFileResponse(BaseModel):
-    path: str
+class UploadFileResponse(BaseModel):
+    filename: str
     status: str  # "indexed" | "reindexed" | "already_indexed"
 
 
 class DeleteFileResponse(BaseModel):
     path: str
     status: str  # "deleted" | "not_found"
+
+
+class FileInfo(BaseModel):
+    filename: str
+    size_bytes: int
+
+
+class ListFilesResponse(BaseModel):
+    files: list[FileInfo]
+    total: int
+    page: int
+    page_size: int
 
 
 class IndexInfoResponse(BaseModel):
@@ -116,33 +128,38 @@ def search_endpoint(body: SearchRequest, request: Request):
     )
 
 
-@router.post("/add-file", response_model=AddFileResponse)
-def add_file(body: FilePathRequest, request: Request):
+@router.post("/upload-file", response_model=UploadFileResponse)
+async def upload_file(request: Request, file: UploadFile = File(...)):
+    filename = file.filename or ""
+    if not filename or Path(filename).suffix not in (".txt", ".md"):
+        raise HTTPException(status_code=400, detail="Only .txt and .md files are supported")
+
     s = request.app.state
     docs_path = _resolve_docs_path(request)
-    file_path = _validate_path(body.path, docs_path)
+    dest = docs_path / filename
 
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+    content_bytes = await file.read()
+    dest.write_bytes(content_bytes)
 
-    doc = load_document(file_path, docs_path)
+    doc = load_document(dest, docs_path)
     if doc is None:
-        raise HTTPException(status_code=400, detail="File is empty or unsupported")
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="File is empty or could not be read")
 
     existing = store.get_document(s.client, s.doc_collection, doc.doc_id_int)
 
     if existing is None:
         index_document(doc, s.config, s.client, s.embed_model, s.sparse_model, s.summarizer,
                        s.doc_collection, s.chunk_collection, s.index_hash)
-        return AddFileResponse(path=body.path, status="indexed")
+        return UploadFileResponse(filename=file.filename, status="indexed")
 
     if existing.payload.get("content_hash") == doc.content_hash:
-        return AddFileResponse(path=body.path, status="already_indexed")
+        return UploadFileResponse(filename=file.filename, status="already_indexed")
 
     delete_document(doc.doc_id, doc.doc_id_int, s.client, s.doc_collection, s.chunk_collection)
     index_document(doc, s.config, s.client, s.embed_model, s.sparse_model, s.summarizer,
                    s.doc_collection, s.chunk_collection, s.index_hash)
-    return AddFileResponse(path=body.path, status="reindexed")
+    return UploadFileResponse(filename=file.filename, status="reindexed")
 
 
 @router.post("/delete-file", response_model=DeleteFileResponse)
@@ -159,8 +176,37 @@ def delete_file(body: FilePathRequest, request: Request):
     if existing is None:
         return DeleteFileResponse(path=body.path, status="not_found")
 
+    file_path.unlink(missing_ok=True)
     delete_document(doc_id, doc_id_int, s.client, s.doc_collection, s.chunk_collection)
     return DeleteFileResponse(path=body.path, status="deleted")
+
+
+@router.get("/list-files", response_model=ListFilesResponse)
+def list_files(
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500),
+    search: str = Query("", description="Filter by filename"),
+):
+    docs_path = _resolve_docs_path(request)
+    all_docs = scan_documents(str(docs_path))
+
+    if search:
+        all_docs = [d for d in all_docs if search.lower() in d.relative_path.lower()]
+
+    total = len(all_docs)
+    start = (page - 1) * page_size
+    page_docs = all_docs[start: start + page_size]
+
+    files = [
+        FileInfo(
+            filename=d.relative_path,
+            size_bytes=Path(d.file_path).stat().st_size,
+        )
+        for d in page_docs
+    ]
+
+    return ListFilesResponse(files=files, total=total, page=page, page_size=page_size)
 
 
 @router.get("/index-info", response_model=IndexInfoResponse)

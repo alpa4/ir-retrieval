@@ -1,238 +1,175 @@
 # IR Retrieval Service
 
-Локальный двухуровневый retrieval pipeline для поиска по текстовым документам с гибридным поиском (dense + sparse) и опциональным cross-encoder reranking.
+Two-level retrieval pipeline for searching text documents. Each document is summarized by an LLM and embedded at the doc level for broad candidate selection, then split into chunks for hybrid dense+sparse retrieval with RRF fusion and optional cross-encoder reranking.
 
-## Стек
+## Stack
 
-| Компонент | Технология |
-|---|---|
-| API | FastAPI + uvicorn |
-| Векторная БД | Qdrant 1.11 |
-| Embeddings | sentence-transformers (`BAAI/bge-small-en-v1.5`) |
-| Sparse | TF-weighted bag of words |
-| Hybrid fusion | Qdrant RRF (Reciprocal Rank Fusion) |
-| Cross-encoder | `cross-encoder/ms-marco-MiniLM-L-6-v2` (опционально) |
-| Summarization | OpenAI-compatible API (OpenAI / LM Studio / Ollama) |
-| Конфиг | pydantic-settings + PyYAML |
-| Запуск | Docker Compose (cpu / gpu профили) |
+- **API**: FastAPI + uvicorn
+- **Vector DB**: Qdrant 1.11
+- **Embeddings**: `Qwen/Qwen3-Embedding-0.6B` (sentence-transformers)
+- **Sparse**: BM25 (fastembed)
+- **Fusion**: Reciprocal Rank Fusion (Qdrant native)
+- **Cross-encoder**: `BAAI/bge-reranker-v2-m3` (optional)
+- **Summarization**: OpenAI-compatible API with text fallback
+- **Config**: pydantic-settings + PyYAML
+- **Runtime**: Docker Compose (cpu / gpu profiles)
 
-## Как работает
+## How it works
 
-```
-Запрос
-  │
-  ▼
-Doc-level dense retrieval (top_k_doc документов)
-  │
-  ▼
-Chunk-level hybrid retrieval (dense + sparse → RRF fusion)
-  │  фильтрация по найденным doc_id
-  ▼
-[Optional] Cross-encoder reranking
-  │
-  ▼
-Результаты с полными score-ами
-```
+At indexing time each document is summarized via LLM (or falls back to first 4000 chars), the summary is embedded into the `doc_level` collection, and the full text is chunked with dense + sparse vectors stored in `chunk_level`.
 
-При индексации каждый документ:
-1. Суммаризуется через LLM (или первые 4000 символов как fallback)
-2. Его summary эмбеддится → одна точка в `doc_level` коллекции
-3. Текст режется на чанки → dense + sparse векторы → `chunk_level` коллекция
+At query time: doc-level dense retrieval picks the top candidate documents, then chunk-level hybrid retrieval (dense + sparse → RRF) runs filtered to those documents, and an optional cross-encoder reranks the final results.
 
-## Структура проекта
+## Setup
 
-```
-ir-retrieval/
-├── app/
-│   ├── main.py           # точка входа, lifespan startup
-│   ├── api.py            # FastAPI endpoints
-│   ├── search.py         # поисковый pipeline
-│   ├── indexer.py        # индексация документов
-│   ├── reranker.py       # cross-encoder reranking
-│   ├── summarizer.py     # LLM summarization с fallback
-│   ├── qdrant_store.py   # операции с Qdrant
-│   ├── embeddings.py     # dense embeddings
-│   ├── sparse.py         # sparse векторы (TF-weighted)
-│   ├── splitter.py       # разбиение текста на чанки
-│   ├── files.py          # обход файлов, doc_id, content_hash
-│   ├── hashing.py        # вычисление index_hash
-│   ├── models.py         # AppConfig pydantic модели
-│   ├── settings.py       # EnvSettings (читает .env)
-│   ├── config_loader.py  # загрузка config.yaml
-│   ├── state.py          # index_state.json управление
-│   └── evaluator.py      # CLI evaluation: Recall, Precision, MRR, nDCG
-├── scripts/
-│   └── prepare_dataset.py  # скачать BEIR датасет и конвертировать
-├── config/
-│   └── config.yaml       # параметры системы
-├── data/documents/       # сюда кладём .txt / .md файлы
-├── state/                # index_state.json (генерируется автоматически)
-├── eval/
-│   ├── queries.jsonl     # запросы для evaluation
-│   └── qrels.jsonl       # релевантные документы для evaluation
-├── .env.example
-├── docker-compose.yml
-├── Dockerfile
-└── requirements.txt
-```
-
-## Быстрый старт
-
-### 1. Создать `.env`
+### 1. Create `.env`
 
 ```bash
 cp .env.example .env
 ```
 
-Для OpenAI:
+Point `OPENAI_BASE_URL` at your LLM backend. If running vLLM or similar locally, use `host.docker.internal` instead of `localhost` so the container can reach it:
+
 ```env
-OPENAI_API_KEY=sk-...
-OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_API_KEY=your-key
+OPENAI_BASE_URL=http://host.docker.internal:37555/v1
 ```
 
-Для LM Studio (локальная LLM):
-```env
-OPENAI_API_KEY=lm-studio
-OPENAI_BASE_URL=http://host.docker.internal:1234/v1
-```
+Set the served model name in `config/config.yaml` → `doc_summary.model` to match your backend's `--served-model-name`. To disable LLM summarization entirely: `doc_summary.enabled: false`.
 
-> LM Studio: запустить локальный сервер на `0.0.0.0:1234`, загрузить модель.
-> Имя модели указать в `config/config.yaml` → `doc_summary.model`.
+### 2. Add documents
 
-Если LLM не нужна — выставить `doc_summary.enabled: false` в `config.yaml`.
+Drop `.txt` or `.md` files into `data/documents/`. Subdirectories are supported. Alternatively use the `/upload-file` API or the Streamlit UI.
 
-### 2. Положить документы
+### 3. Run
 
 ```bash
-cp my_docs/*.txt data/documents/
-```
-
-Поддерживаются `.txt` и `.md` файлы.
-
-### 3. Запустить
-
-```bash
+# CPU
 docker compose --profile cpu up --build
-```
 
-Для NVIDIA GPU:
-```bash
+# GPU (NVIDIA)
 docker compose --profile gpu up --build
 ```
 
-Сервис поднимется на `http://localhost:8000`.
+API available at `http://localhost:8000`. On first start all documents in `data/documents/` are indexed automatically.
 
-## Конфигурация
+### 4. UI (optional)
 
-Все параметры в `config/config.yaml`, секреты в `.env`.
+```bash
+streamlit run streamlit_app.py
+```
 
-Ключевые параметры:
+Opens at `http://localhost:8501`. Tabs: Search, List Files, Upload File, Delete File, System Status.
+
+## Configuration
+
+All tunable parameters live in `config/config.yaml`, secrets in `.env`.
 
 ```yaml
 splitting:
-  chunk_size: 800       # размер чанка в символах
-  chunk_overlap: 100    # перекрытие
+  chunk_size: 1000
+  chunk_overlap: 100
 
 embeddings:
-  model_name: BAAI/bge-small-en-v1.5
+  model_name: Qwen/Qwen3-Embedding-0.6B
+  vector_size: 1024
 
 cross_encoder:
-  enabled_by_default: false   # включить для лучшего качества (медленнее)
-  model_name: cross-encoder/ms-marco-MiniLM-L-6-v2
+  enabled_by_default: true
+  model_name: BAAI/bge-reranker-v2-m3
 
 doc_summary:
-  enabled: false        # true = вызов LLM для summary каждого документа
+  enabled: true
+  model: "qwen"           # must match --served-model-name in your LLM backend
+  concurrency: 16         # parallel summary requests during indexing
 
 search_defaults:
-  top_k_doc: 5          # сколько документов отбирается на doc-level
-  top_k_dense: 10       # dense кандидаты на chunk-level
-  top_k_sparse: 10      # sparse кандидаты на chunk-level
-  final_top_k: 10       # итоговое число результатов
+  top_k_doc: 100
+  top_k_dense: 40
+  top_k_sparse: 40
+  final_top_k: 20
 ```
 
-Параметры влияющие на `index_hash` (изменение = полная переиндексация):
-`chunk_size`, `chunk_overlap`, `embeddings.model_name`, `doc_summary.*`, `sparse.enabled`
+Changing `chunk_size`, `chunk_overlap`, `embeddings.model_name`, `doc_summary.*`, or `sparse.enabled` triggers a full reindex on next startup (index hash changes → new Qdrant collections are created).
 
 ## API
 
-### `GET /health`
-```json
-{"status": "ok"}
-```
+`GET /health` — liveness check.
 
-### `GET /index-info`
-```json
-{"docs_on_disk": 5183, "docs_in_index": 5183, "status": "ok"}
-```
+`GET /index-info` — returns doc count on disk vs. in index.
 
-### `POST /search`
+`GET /list-files?page=1&page_size=50&search=` — paginated file listing.
+
+`POST /search` — main search endpoint:
 ```bash
 curl -X POST http://localhost:8000/search \
   -H 'Content-Type: application/json' \
-  -d '{"query": "your query here", "final_top_k": 5}'
+  -d '{"query": "your query", "final_top_k": 10, "use_cross_encoder": true}'
 ```
+All fields except `query` are optional and fall back to `search_defaults` in config.
 
-Параметры (все опциональны, defaults из config):
-- `top_k_doc`, `top_k_dense`, `top_k_sparse`, `final_top_k`
-- `use_cross_encoder: true/false`
+`POST /upload-file` — upload a `.txt` or `.md` file (multipart), saves to the documents volume and indexes immediately. Returns `indexed`, `reindexed`, or `already_indexed`.
 
-### `POST /add-file`
-```bash
-curl -X POST http://localhost:8000/add-file \
-  -H 'Content-Type: application/json' \
-  -d '{"path": "/app/data/documents/new_doc.txt"}'
-```
-Возвращает `status`: `indexed` / `reindexed` / `already_indexed`
-
-### `POST /delete-file`
+`POST /delete-file` — removes a document from the index and from disk:
 ```bash
 curl -X POST http://localhost:8000/delete-file \
   -H 'Content-Type: application/json' \
   -d '{"path": "/app/data/documents/old_doc.txt"}'
 ```
 
+Full interactive docs at `http://localhost:8000/docs`.
+
 ## Evaluation
 
-### Подготовка датасета BEIR
-
+Download and convert a BEIR dataset:
 ```bash
-# Скачать и конвертировать SciFact (5183 документа, 300 запросов)
 python3 scripts/prepare_dataset.py --dataset scifact
-
-# Доступные датасеты: scifact, nfcorpus, fiqa, arguana
-python3 scripts/prepare_dataset.py --dataset nfcorpus
+# also available: nfcorpus, fiqa, arguana
 ```
 
-Скрипт скачивает датасет, сохраняет документы в `data/documents/`,
-обновляет `eval/queries.jsonl` и `eval/qrels.jsonl`.
-
-### Запуск evaluation
-
+Run evaluation against the live API:
 ```bash
-# После индексации
-python3 -m app.evaluator \
-  --queries eval/queries.jsonl \
-  --qrels eval/qrels.jsonl \
-  --api http://localhost:8000
+python3 -m app.evaluator --queries eval/queries.jsonl --qrels eval/qrels.jsonl
+
+# with cross-encoder
+python3 -m app.evaluator --cross-encoder
+
+# custom k values
+python3 -m app.evaluator --k 5 10 20
 ```
 
-### Результаты на SciFact (BEIR)
+### Results on SciFact (BEIR, 5183 docs, 300 queries)
 
-Конфигурация: `BAAI/bge-small-en-v1.5`, hybrid RRF, без cross-encoder, без LLM summary.
+Config: `Qwen3-Embedding-0.6B`, BM25 sparse, hybrid RRF, `Qwen2.5-14B-Instruct-GPTQ-Int8` summaries.
 
-| Метрика | Значение |
+Without cross-encoder:
+
+| Metric | Value |
 |---|---|
-| Recall@5 | 0.765 |
-| Recall@10 | 0.765 |
-| Precision@5 | 0.170 |
-| MRR | 0.650 |
-| nDCG@5 | 0.672 |
-| nDCG@10 | 0.672 |
+| Recall@5 | 0.7425 |
+| Recall@10 | 0.8033 |
+| Precision@5 | 0.1647 |
+| Precision@10 | 0.0907 |
+| MRR | 0.6585 |
+| nDCG@5 | 0.6661 |
+| nDCG@10 | 0.6876 |
 
-## Сценарии при старте
+With cross-encoder (`BAAI/bge-reranker-v2-m3`):
 
-| Сценарий | Условие | Действие |
-|---|---|---|
-| A | нет state файла | индексировать все документы |
-| B | hash совпадает | доиндексировать только новые/изменённые |
-| C | hash изменился | создать новые коллекции, переиндексировать всё |
+| Metric | Value |
+|---|---|
+| Recall@5 | 0.7856 |
+| Recall@10 | 0.8226 |
+| Precision@5 | 0.1740 |
+| Precision@10 | 0.0923 |
+| MRR | 0.6900 |
+| nDCG@5 | 0.7025 |
+| nDCG@10 | 0.7164 |
+
+## Startup scenarios
+
+On each startup the service computes an index hash from the current config and compares it to the saved state:
+
+- **No state file** — index all documents
+- **Hash matches** — check for new or changed documents only
+- **Hash changed** (config modified) — create new Qdrant collections and reindex everything

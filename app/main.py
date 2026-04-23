@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -12,6 +13,19 @@ from app.reranker import load_cross_encoder
 from app.indexer import sync_documents
 
 logger = logging.getLogger("uvicorn.error")
+
+
+async def _wait_for_qdrant(config, retries: int = 15, delay: float = 3.0):
+    for attempt in range(1, retries + 1):
+        try:
+            client = get_client(config.qdrant)
+            client.get_collections()
+            return client
+        except Exception:
+            if attempt == retries:
+                raise
+            logger.info(f"Qdrant not ready, retrying ({attempt}/{retries})...")
+            await asyncio.sleep(delay)
 
 
 @asynccontextmanager
@@ -31,7 +45,7 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Scenario B: hash matches → checking for missing documents")
 
-    client = get_client(config.qdrant)
+    client = await _wait_for_qdrant(config)
     vector_size = config.embeddings.vector_size
     create_doc_collection(client, doc_collection, vector_size)
     create_chunk_collection(client, chunk_collection, vector_size)
@@ -60,8 +74,8 @@ async def lifespan(app: FastAPI):
     cross_encoder = load_cross_encoder(config.cross_encoder)
     logger.info("Cross-encoder ready" if cross_encoder else "Cross-encoder disabled")
 
-    sync_documents(config, client, embed_model, sparse_model, summarizer,
-                   doc_collection, chunk_collection, index_hash)
+    await sync_documents(config, client, embed_model, sparse_model, summarizer,
+                         doc_collection, chunk_collection, index_hash)
 
     state = IndexState(
         index_hash=index_hash,

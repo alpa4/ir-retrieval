@@ -1,0 +1,5 @@
+model_cache/
+qdrant_data/
+state/
+data/
+.venv

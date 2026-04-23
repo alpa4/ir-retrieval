@@ -7,7 +7,8 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
-
+model_cache/
+qdrant_data/
 # State (generated at runtime)
 state/index_state.json
 

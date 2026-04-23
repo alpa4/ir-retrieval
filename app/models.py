@@ -51,6 +51,7 @@ class DocSummaryConfig(BaseModel):
     temperature: float = 0
     max_tokens: int = 300
     prompt_version: str = "v1"
+    concurrency: int = 16
 
 
 class QdrantConfig(BaseModel):

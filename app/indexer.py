@@ -1,4 +1,6 @@
+import asyncio
 import logging
+from typing import Optional
 from sentence_transformers import SentenceTransformer
 from fastembed import SparseTextEmbedding
 from qdrant_client import QdrantClient
@@ -24,36 +26,38 @@ def index_document(
     doc_collection: str,
     chunk_collection: str,
     index_hash: str,
-) -> None:
-    doc_text = summarizer.summarize(doc.content)
+    summary: Optional[str] = None,
+) -> bool:
+    """Returns True if indexed successfully, False if skipped due to a Qdrant error."""
+    doc_text = summary if summary is not None else summarizer.summarize(doc.content)
     doc_vector = embed_single(embed_model, doc_text)
 
-    # 2. Upsert document into doc_level collection
-    store.upsert_document(
-        client=client,
-        collection=doc_collection,
-        doc_id=doc.doc_id_int,
-        vector=doc_vector,
-        payload={
-            "doc_id": doc.doc_id,
-            "file_path": doc.file_path,
-            "file_name": doc.relative_path,
-            "summary": doc_text,
-            "content_hash": doc.content_hash,
-            "index_hash": index_hash,
-        },
-    )
+    try:
+        store.upsert_document(
+            client=client,
+            collection=doc_collection,
+            doc_id=doc.doc_id_int,
+            vector=doc_vector,
+            payload={
+                "doc_id": doc.doc_id,
+                "file_path": doc.file_path,
+                "file_name": doc.relative_path,
+                "summary": doc_text,
+                "content_hash": doc.content_hash,
+                "index_hash": index_hash,
+            },
+        )
+    except Exception as e:
+        logger.warning(f"Failed to upsert document {doc.relative_path}: {e}")
+        return False
 
-    # 3. Split into chunks
     chunks = split_text(doc.doc_id, doc.content, config.splitting)
     if not chunks:
-        return
+        return True
 
-    # 4. Embed all chunks at once
     texts = [c.chunk_text for c in chunks]
     dense_vectors = embed_texts(embed_model, texts, config.embeddings.batch_size)
 
-    # 5. Build sparse vectors and prepare points
     points = []
     for chunk, dense_vector in zip(chunks, dense_vectors):
         sparse = build_sparse_vector(sparse_model, chunk.chunk_text)
@@ -73,8 +77,14 @@ def index_document(
             },
         })
 
-    # 6. Upsert chunks into chunk_level collection
-    store.upsert_chunks(client, chunk_collection, points)
+    try:
+        store.upsert_chunks(client, chunk_collection, points)
+    except Exception as e:
+        logger.warning(f"Failed to upsert chunks for {doc.relative_path}: {e}")
+        store.delete_document(client, doc_collection, doc.doc_id_int)
+        return False
+
+    return True
 
 
 def delete_document(
@@ -88,7 +98,23 @@ def delete_document(
     store.delete_chunks_by_doc(client, chunk_collection, doc_id)
 
 
-def sync_documents(
+async def _prefetch_summaries(
+    docs: list[DocumentFile],
+    summarizer: DocumentSummarizer,
+    concurrency: int,
+) -> dict[str, str]:
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def fetch_one(doc: DocumentFile) -> tuple[str, str]:
+        async with semaphore:
+            summary = await summarizer.summarize_async(doc.content)
+            return doc.doc_id, summary
+
+    pairs = await asyncio.gather(*[fetch_one(doc) for doc in docs])
+    return dict(pairs)
+
+
+async def sync_documents(
     config: AppConfig,
     client: QdrantClient,
     embed_model: SentenceTransformer,
@@ -98,24 +124,44 @@ def sync_documents(
     chunk_collection: str,
     index_hash: str,
 ) -> None:
-    """Index all documents that are not yet in the doc_level collection."""
     docs = scan_documents(config.index.docs_path)
     logger.info(f"Syncing {len(docs)} document(s)...")
 
-    indexed = 0
+    pending: list[tuple[DocumentFile, bool]] = []
     for doc in docs:
         existing = store.get_document(client, doc_collection, doc.doc_id_int)
-
         if existing is None:
-            logger.info(f"Indexing: {doc.relative_path}")
-            index_document(doc, config, client, embed_model, sparse_model, summarizer,
-                           doc_collection, chunk_collection, index_hash)
-            indexed += 1
+            pending.append((doc, False))
         elif existing.payload.get("content_hash") != doc.content_hash:
-            logger.info(f"Reindexing (changed): {doc.relative_path}")
-            delete_document(doc.doc_id, doc.doc_id_int, client, doc_collection, chunk_collection)
-            index_document(doc, config, client, embed_model, sparse_model, summarizer,
-                           doc_collection, chunk_collection, index_hash)
-            indexed += 1
+            pending.append((doc, True))
 
-    logger.info(f"Sync complete. Indexed/updated: {indexed}, skipped: {len(docs) - indexed}")
+    if not pending:
+        logger.info(f"Sync complete. Indexed/updated: 0, skipped: {len(docs)}")
+        return
+
+    concurrency = config.doc_summary.concurrency
+    logger.info(f"Indexing {len(pending)} document(s) in batches of {concurrency}...")
+
+    indexed = 0
+    for batch_start in range(0, len(pending), concurrency):
+        batch = pending[batch_start: batch_start + concurrency]
+        batch_docs = [doc for doc, _ in batch]
+
+        summaries = await _prefetch_summaries(batch_docs, summarizer, concurrency)
+
+        for doc, needs_delete in batch:
+            if needs_delete:
+                logger.info(f"Reindexing (changed): {doc.relative_path}")
+                delete_document(doc.doc_id, doc.doc_id_int, client, doc_collection, chunk_collection)
+            else:
+                logger.info(f"Indexing: {doc.relative_path}")
+            if index_document(
+                doc, config, client, embed_model, sparse_model, summarizer,
+                doc_collection, chunk_collection, index_hash,
+                summary=summaries.get(doc.doc_id),
+            ):
+                indexed += 1
+
+    failed = len(pending) - indexed
+    logger.info(f"Sync complete. Indexed/updated: {indexed}, skipped: {len(docs) - len(pending)}"
+                + (f", failed: {failed}" if failed else ""))
